@@ -1,6 +1,48 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import {
+    getFirestore,
+    collection,
+    doc,
+    getDoc,
+    setDoc,
+    getDocs
+  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+  import {
+    getAuth
+  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBmBLvK8j6fVFV7vcAfAz8rE-5lhCfyqSA",
+    authDomain: "trackflix-350d9.firebaseapp.com",
+    projectId: "trackflix-350d9",
+    storageBucket: "trackflix-350d9.firebasestorage.app",
+    messagingSenderId: "564135421634",
+    appId: "1:564135421634:web:79ac49c50f629fb1dbbd5b",
+    measurementId: "G-6YBFZ8LQNC"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const auth = getAuth(app);
+
+  // OVO ćemo koristiti iz trackflix.js
+  window.tfFirestore = {
+    db,
+    collection,
+    doc,
+    getDoc,
+    setDoc,
+    getDocs,
+  };
+
+  // ostavljeno ako kasnije budemo radili pravi auth
+  window.firebaseAuth = auth;
+</script>
+
   <meta charset="UTF-8" />
   <title>Trackflix</title>
   <link rel="stylesheet" href="trackflix.css" />
