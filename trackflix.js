@@ -5,38 +5,56 @@ let items = [];
 let history = [];
 let plans = [];
 
+// Firestore helper (ako postoji)
+const TF = window.tfFirestore || null;
+
+
 /* ---------- PERSIST ---------- */
 
-function loadData() {
+async function loadData() {
   try {
-    // 1) UČITAJ ZAJEDNIČKI LIBRARY
-    const rawLib = localStorage.getItem(LIBRARY_KEY);
     let libraryItems = [];
-    if (rawLib) {
-      libraryItems = JSON.parse(rawLib);
+
+    // 1) PROBAJ IZ FIRESTORE-A (shared library za sve)
+    if (TF) {
+      try {
+        const snap = await TF.getDocs(TF.collection(TF.db, "library"));
+        snap.forEach(docSnap => {
+          const data = docSnap.data();
+          libraryItems.push(data);
+        });
+      } catch (err) {
+        console.error("Firestore library load error:", err);
+      }
     }
 
-    // OPCIJSKI: fallback – ako još nema library, ali postoji stari "trackflix_v9"
-    if (!rawLib) {
-      const oldRaw = localStorage.getItem("trackflix_v9");
-      if (oldRaw) {
-        try {
-          const oldParsed = JSON.parse(oldRaw);
-          libraryItems = (oldParsed.items || []).map(it => ({
-            id: it.id,
-            type: it.type,
-            title: it.title,
-            posterUrl: it.posterUrl || null,
-            description: it.description || null,
-            author: it.author || null,
-            seasons: it.seasons || null,
-            totalEpisodes: it.totalEpisodes || 0,
-            totalPages: it.totalPages || 0,
-            durationMinutes: it.durationMinutes || null
-          }));
-          localStorage.setItem(LIBRARY_KEY, JSON.stringify(libraryItems));
-        } catch (e) {
-          console.error(e);
+    // 2) AKO NEMA NIŠTA U CLOUDU -> stari localStorage fallback
+    if (!libraryItems.length) {
+      const rawLib = localStorage.getItem(LIBRARY_KEY);
+
+      if (rawLib) {
+        libraryItems = JSON.parse(rawLib);
+      } else {
+        const oldRaw = localStorage.getItem("trackflix_v9");
+        if (oldRaw) {
+          try {
+            const oldParsed = JSON.parse(oldRaw);
+            libraryItems = (oldParsed.items || []).map(it => ({
+              id: it.id,
+              type: it.type,
+              title: it.title,
+              posterUrl: it.posterUrl || null,
+              description: it.description || null,
+              author: it.author || null,
+              seasons: it.seasons || null,
+              totalEpisodes: it.totalEpisodes || 0,
+              totalPages: it.totalPages || 0,
+              durationMinutes: it.durationMinutes || null
+            }));
+            localStorage.setItem(LIBRARY_KEY, JSON.stringify(libraryItems));
+          } catch (e) {
+            console.error(e);
+          }
         }
       }
     }
@@ -44,25 +62,70 @@ function loadData() {
     // ako i dalje nema ničega -> prazno
     items = (libraryItems || []).map(it => ({ ...it }));
 
-    // 2) UČITAJ USER-SPECIFIC PODATKE
-    const userKey = getUserStorageKey();
-    const rawUser = localStorage.getItem(userKey);
+    // 3) UČITAJ USER-SPECIFIC PODATKE (history, plans, itemStateById)
     history = [];
     plans = [];
     const stateById = {};
+    const nick = getCurrentUserNick();
 
-    if (rawUser) {
+    // ako imamo Firestore + user nick -> pokušaj iz clouda
+    if (TF && nick) {
       try {
-        const parsedUser = JSON.parse(rawUser);
-        history = parsedUser.history || [];
-        plans = parsedUser.plans || [];
-        Object.assign(stateById, parsedUser.itemStateById || {});
-      } catch (e) {
-        console.error(e);
+        const userRef = TF.doc(TF.db, "users", nick);
+        const snapUser = await TF.getDoc(userRef);
+        if (snapUser.exists()) {
+          const data = snapUser.data();
+          history = data.history || [];
+          plans = data.plans || [];
+          Object.assign(stateById, data.itemStateById || {});
+        } else {
+          // nema u cloudu -> probaj iz localStorage (stari način)
+          const userKey = getUserStorageKey();
+          const rawUser = localStorage.getItem(userKey);
+          if (rawUser) {
+            try {
+              const parsedUser = JSON.parse(rawUser);
+              history = parsedUser.history || [];
+              plans = parsedUser.plans || [];
+              Object.assign(stateById, parsedUser.itemStateById || {});
+            } catch (e) {
+              console.error(e);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Firestore user load error:", err);
+        // fallback na localStorage
+        const userKey = getUserStorageKey();
+        const rawUser = localStorage.getItem(userKey);
+        if (rawUser) {
+          try {
+            const parsedUser = JSON.parse(rawUser);
+            history = parsedUser.history || [];
+            plans = parsedUser.plans || [];
+            Object.assign(stateById, parsedUser.itemStateById || {});
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      }
+    } else {
+      // nema Firestore-a ili nema nicka -> čitaj samo iz localStorage (stari način)
+      const userKey = getUserStorageKey();
+      const rawUser = localStorage.getItem(userKey);
+      if (rawUser) {
+        try {
+          const parsedUser = JSON.parse(rawUser);
+          history = parsedUser.history || [];
+          plans = parsedUser.plans || [];
+          Object.assign(stateById, parsedUser.itemStateById || {});
+        } catch (e) {
+          console.error(e);
+        }
       }
     }
 
-    // 3) SPOJI USER STATE U items
+    // 4) SPOJI USER STATE U items (isto kao prije)
     items.forEach(it => {
       const st = stateById[it.id];
       if (st) {
@@ -73,7 +136,6 @@ function loadData() {
         it.timeWatched = st.timeWatched || 0;
         it.rating = st.rating ?? null;
       } else {
-        // default – nije u osobnoj listi i nema napretka
         it.inList = false;
         it.progress = 0;
         it.started = false;
@@ -143,9 +205,9 @@ function getUserSnapshotByNick(nick) {
   };
 }
 
-function saveData() {
+async function saveData() {
   try {
-    // 1) SPREMI ZAJEDNIČKI LIBRARY (bez user polja)
+    // 1) SPREMI ZAJEDNIČKI LIBRARY U LOCALSTORAGE (backup / offline)
     const libraryToSave = items.map(it => ({
       id: it.id,
       type: it.type,
@@ -160,7 +222,7 @@ function saveData() {
     }));
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(libraryToSave));
 
-    // 2) SPREMI USER STATE ZA TRENUTNOG USERA
+    // 2) SPREMI USER STATE ZA TRENUTNOG USERA U LOCALSTORAGE
     const itemStateById = {};
     items.forEach(it => {
       itemStateById[it.id] = {
@@ -180,6 +242,21 @@ function saveData() {
       plans
     };
     localStorage.setItem(userKey, JSON.stringify(userPayload));
+
+    // 3) SPREMI SVE I U FIRESTORE (ako je dostupan)
+    if (TF) {
+      // shared library – svi dijele isti
+      for (const it of libraryToSave) {
+        const ref = TF.doc(TF.db, "library", String(it.id));
+        await TF.setDoc(ref, it, { merge: true });
+      }
+
+      const nick = getCurrentUserNick();
+      if (nick) {
+        const userRef = TF.doc(TF.db, "users", nick);
+        await TF.setDoc(userRef, userPayload, { merge: true });
+      }
+    }
   } catch (e) {
     console.error(e);
   }
@@ -2543,9 +2620,12 @@ document.getElementById("fabBtn").onclick = () => {
 
 /* ---------- INIT ---------- */
 
-loadData();
-renderHome();
-renderCalendar();
-renderStats();
-renderProfile();
-updateHeaderNickname();
+(async function initTrackflix() {
+  await loadData();
+  renderHome();
+  renderCalendar();
+  renderStats();
+  renderProfile();
+  updateHeaderNickname();
+})();
+
